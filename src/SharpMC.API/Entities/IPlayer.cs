@@ -12,7 +12,7 @@ namespace SharpMC.API.Entities
     {
         GameMode Gamemode { get; set; }
 
-        ILevel Level { get; set; }
+        ILevel? Level { get; set; }
 
         PlayerLocation KnownPosition { get; set; }
 

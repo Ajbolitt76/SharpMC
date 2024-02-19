@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using SharpMC.Data.Blocks;
 using SharpMC.Data.Items;
 
@@ -7,17 +8,17 @@ namespace SharpMC.Data
 {
     public static class Finder
     {
-        private static IDictionary<int, Block> StatesToBlocks { get; } = LoadBlockStates();
+        private static Block[] StatesToBlocks { get; } = LoadBlockStates();
         private static IDictionary<int, Item> IdsToItems { get; } = LoadItemIds();
 
         public static Block FindBlockByState(int state)
         {
-            if (StatesToBlocks.TryGetValue(state, out var block))
-                return block;
+            if (state >= 0 && state < StatesToBlocks.Length)
+                return StatesToBlocks[state];
             throw new InvalidOperationException($"Could not find block: {state}");
         }
 
-        private static IDictionary<int, Block> LoadBlockStates()
+        private static Block[] LoadBlockStates()
         {
             var dict = new SortedDictionary<int, Block>();
             foreach (var block in KnownBlocks.All)
@@ -31,7 +32,7 @@ namespace SharpMC.Data
                     dict.Add(stateId, toAdd);
                 }
             }
-            return dict;
+            return dict.Select(x => x.Value).ToArray();
         }
 
         public static Item FindItemById(int id)

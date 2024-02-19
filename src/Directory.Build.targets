@@ -1,0 +1,5 @@
+﻿<Project>
+  <ItemGroup>
+    <FrameworkReference Update="*" Visible="false" />
+  </ItemGroup>
+</Project>

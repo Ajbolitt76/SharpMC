@@ -24,9 +24,13 @@ namespace SharpMC
         private readonly ILoggerFactory _logFactory;
         private readonly IHostEnv _env;
 
-        public MinecraftServer(ILogger<MinecraftServer> log, IOptions<ServerSettings> cfg,
-            ILevelManager levelManager, IPluginManager pluginManager, 
-            ILoggerFactory logFactory, IHostEnv env)
+        public MinecraftServer(
+            ILogger<MinecraftServer> log,
+            IOptions<ServerSettings> cfg,
+            ILevelManager levelManager,
+            IPluginManager pluginManager, 
+            ILoggerFactory logFactory,
+            IHostEnv env)
         {
             _log = log;
             _settings = cfg;
@@ -79,6 +83,7 @@ namespace SharpMC
             var factory = new McConnectionFactory(this, _logFactory);
             Server = new NetServer(log, config, factory);
             Server.Start();
+            
             _log.LogInformation("Server ready for connections.");
         }
 

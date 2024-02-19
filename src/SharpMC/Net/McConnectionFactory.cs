@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Net.Sockets;
 using Microsoft.Extensions.Logging;
+using Pipelines.Sockets.Unofficial;
 using SharpMC.API;
 using SharpMC.Network;
 using SharpMC.Network.API;
@@ -20,7 +21,9 @@ namespace SharpMC.Net
             _factory = factory;
         }
 
-        protected override NetConnection Create(Direction direction, Socket socket,
+        protected override NetConnection Create(
+            Direction direction, 
+            SocketConnection socket,
             EventHandler<ConnectionConfirmedArgs>? confirmedAction = null)
         {
             var log = _factory.CreateLogger<NetConnection>();

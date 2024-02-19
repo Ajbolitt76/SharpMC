@@ -9,7 +9,7 @@ namespace SharpMC.API
 
         void Stop();
 
-        IEncryption RsaEncryption { get; }
+        IEncryption? RsaEncryption { get; }
 
         IPlayerFactory PlayerFactory { get; }
 

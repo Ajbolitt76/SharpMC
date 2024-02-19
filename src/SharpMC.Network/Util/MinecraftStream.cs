@@ -1,10 +1,13 @@
 ﻿using System;
+using System.Buffers;
 using System.IO;
 using System.Linq;
 using System.Net;
 using System.Numerics;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using Org.BouncyCastle.Crypto;
 using Org.BouncyCastle.Crypto.Engines;
 using Org.BouncyCastle.Crypto.IO;
@@ -18,79 +21,96 @@ using SharpNBT;
 
 namespace SharpMC.Network.Util
 {
-	public class MinecraftStream : Stream, IMinecraftStream
-	{
-		private BufferedBlockCipher EncryptCipher { get; set; }
-		private BufferedBlockCipher DecryptCipher { get; set; }
+    public class MinecraftStream : Stream, IMinecraftStream
+    {
+        private Aes CipherInstance { get; set; }
 
-		private CancellationTokenSource CancelationToken { get; }
-		public Stream BaseStream { get; private set; }
+        private CancellationTokenSource CancelationToken { get; }
 
-		public MinecraftStream(Stream baseStream)
-		{
-			BaseStream = baseStream;
-			CancelationToken = new CancellationTokenSource();
-		}
+        private Stream BaseStream { get; set; }
 
-		public MinecraftStream() : this(new MemoryStream())
-		{
+        public MinecraftStream(Stream baseStream)
+        {
+            BaseStream = baseStream;
+            CancelationToken = new CancellationTokenSource();
         }
+
+/*
+        public void InitEncryption(byte[] key, bool write)
+        {
+            CipherInstance = Aes.Create();
+            CipherInstance.Mode = CipherMode.CFB;
+            CipherInstance.Key = key;
+            CipherInstance.IV = key[..16];
+            
+            BaseStream = new CryptoStream(
+                BaseStream,
+                write ? CipherInstance.CreateEncryptor() : CipherInstance.CreateDecryptor(),
+                write ? CryptoStreamMode.Write : CryptoStreamMode.Read,
+                true);
+        }
+ */
 
 		public void InitEncryption(byte[] key, bool write)
 		{
-			EncryptCipher = new BufferedBlockCipher(new CfbBlockCipher(new AesEngine(), 8));
+			var EncryptCipher = new BufferedBlockCipher(new CfbBlockCipher(new AesEngine(), 8));
 			EncryptCipher.Init(true, new ParametersWithIV(
 				new KeyParameter(key), key, 0, 16));
 
-			DecryptCipher = new BufferedBlockCipher(new CfbBlockCipher(new AesEngine(), 8));
+			var DecryptCipher = new BufferedBlockCipher(new CfbBlockCipher(new AesEngine(), 8));
 			DecryptCipher.Init(false, new ParametersWithIV(
 				new KeyParameter(key), key, 0, 16));
 
 			BaseStream = new CipherStream(BaseStream, DecryptCipher, EncryptCipher);
 		}
 
-		public override bool CanRead => BaseStream.CanRead;
-		public override bool CanSeek => BaseStream.CanRead;
-		public override bool CanWrite => BaseStream.CanRead;
-		public override long Length => BaseStream.Length;
+        public override bool CanRead => BaseStream.CanRead;
+        public override bool CanSeek => BaseStream.CanRead;
+        public override bool CanWrite => BaseStream.CanRead;
+        public override long Length => BaseStream.Length;
 
-		public override long Position
-		{
-			get => BaseStream.Position;
+        public override long Position
+        {
+            get => BaseStream.Position;
             set => BaseStream.Position = value;
         }
 
-		public override long Seek(long offset, SeekOrigin origin)
-		{
-			return BaseStream.Seek(offset, origin);
-		}
+        public override long Seek(long offset, SeekOrigin origin)
+        {
+            return BaseStream.Seek(offset, origin);
+        }
 
-		public override void SetLength(long value)
-		{
-			BaseStream.SetLength(value);
-		}
+        public override void SetLength(long value)
+        {
+            BaseStream.SetLength(value);
+        }
 
-		public override int Read(byte[] buffer, int offset, int count)
-		{
-			return BaseStream.Read(buffer, offset, count);
-		}
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            return BaseStream.Read(buffer, offset, count);
+        }
 
-		public override void Write(byte[] buffer, int offset, int count)
-		{
-			BaseStream.Write(buffer, offset, count);
-		}
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            BaseStream.Write(buffer, offset, count);
+        }
 
-		public override void Flush()
-		{
-			BaseStream.Flush();
-		}
+        public override void WriteByte(byte value)
+        {
+            Span<byte> c = stackalloc byte[1] { value };
+            BaseStream.Write(c);
+        }
 
-		#region Reader
+        public override void Flush() 
+            => BaseStream.Flush();
 
-		public override int ReadByte()
-		{
-			return BaseStream.ReadByte();
-		}
+        public override Task FlushAsync(CancellationToken cancellationToken) 
+            => BaseStream.FlushAsync(cancellationToken);
+
+        #region Reader
+
+        public override int ReadByte() 
+            => BaseStream.ReadByte();
 
         public T ReadNbt<T>() where T : INbtSerializable, new()
         {
@@ -102,48 +122,49 @@ namespace SharpMC.Network.Util
         public T ReadBitField<T>() where T : IPacket, new()
         {
             var bits = new T();
-			bits.Decode(this);
+            bits.Decode(this);
             return bits;
         }
 
         public byte[] Read(int length)
-		{
+        {
             var s = new SpinWait();
-			var read = 0;
+            var read = 0;
 
-			var buffer = new byte[length];
+            var buffer = new byte[length];
             while (read < buffer.Length && !CancelationToken.IsCancellationRequested &&
-                   s.Count < 25) 
+                   s.Count < 25)
                 // Give the network some time to catch up on sending data,
                 // but really 25 cycles should be enough.
-			{
-				var oldRead = read;
+            {
+                var oldRead = read;
 
-				var r = Read(buffer, read, length - read);
-				if (r < 0) //No data read?
-				{
-					break;
-				}
+                var r = Read(buffer, read, length - read);
+                if (r < 0) //No data read?
+                {
+                    break;
+                }
 
-				read += r;
+                read += r;
 
-				if (read == oldRead)
-				{
-					s.SpinOnce();
-				}
-				if (CancelationToken.IsCancellationRequested) 
+                if (read == oldRead)
+                {
+                    s.SpinOnce();
+                }
+
+                if (CancelationToken.IsCancellationRequested)
                     throw new ObjectDisposedException("");
-			}
+            }
 
-			return buffer;
-		}
+            return buffer;
+        }
 
-		public int ReadInt()
-		{
-			var dat = Read(4);
-			var value = BitConverter.ToInt32(dat, 0);
-			return IPAddress.NetworkToHostOrder(value);
-		}
+        public int ReadInt()
+        {
+            var dat = Read(4);
+            var value = BitConverter.ToInt32(dat, 0);
+            return IPAddress.NetworkToHostOrder(value);
+        }
 
         public ISlotData ReadSlot()
         {
@@ -152,31 +173,31 @@ namespace SharpMC.Network.Util
             return slot;
         }
 
-		public float ReadFloat()
-		{
-			var almost = Read(4);
-			var f = BitConverter.ToSingle(almost, 0);
-			return NetworkToHostOrder(f);
-		}
+        public float ReadFloat()
+        {
+            var almost = Read(4);
+            var f = BitConverter.ToSingle(almost, 0);
+            return NetworkToHostOrder(f);
+        }
 
-		public bool ReadBool()
-		{
-			var answer = ReadByte();
-			if (answer == 1)
-				return true;
-			return false;
-		}
+        public bool ReadBool()
+        {
+            var answer = ReadByte();
+            if (answer == 1)
+                return true;
+            return false;
+        }
 
         byte IMinecraftReader.ReadByte()
         {
-            return (byte) ReadByte();
+            return (byte)ReadByte();
         }
 
-		public double ReadDouble()
-		{
-			var almostValue = Read(8);
-			return NetworkToHostOrder(almostValue);
-		}
+        public double ReadDouble()
+        {
+            var almostValue = Read(8);
+            return NetworkToHostOrder(almostValue);
+        }
 
         public byte[] ReadBuffer()
         {
@@ -195,6 +216,7 @@ namespace SharpMC.Network.Util
             {
                 result[i] = ReadString();
             }
+
             return result;
         }
 
@@ -206,6 +228,7 @@ namespace SharpMC.Network.Util
             {
                 result[i] = ReadBitField<T>();
             }
+
             return result;
         }
 
@@ -217,6 +240,7 @@ namespace SharpMC.Network.Util
             {
                 result[i] = ReadLong();
             }
+
             return result;
         }
 
@@ -226,8 +250,9 @@ namespace SharpMC.Network.Util
             var result = new byte[length];
             for (var i = 0; i < length; i++)
             {
-                result[i] = (byte) ReadByte();
+                result[i] = (byte)ReadByte();
             }
+
             return result;
         }
 
@@ -239,66 +264,61 @@ namespace SharpMC.Network.Util
             {
                 result[i] = ReadByteArray();
             }
+
             return result;
         }
 
-        public sbyte ReadSByte()
+        public sbyte ReadSByte() => (sbyte)ReadByte();
+
+        public int ReadVarInt() => ReadVarInt(out _);
+
+        public int ReadVarInt(out int bytesRead)
         {
-			return (sbyte) ReadByte();
+            var numRead = 0;
+            var result = 0;
+            byte read;
+            do
+            {
+                read = (byte)ReadByte();
+                var value = read & 0x7f;
+                result |= value << (7 * numRead);
+                numRead++;
+                if (numRead > 5)
+                {
+                    throw new Exception("VarInt is too big");
+                }
+            } while ((read & 0x80) != 0);
+
+            bytesRead = numRead;
+            return result;
         }
 
-		public int ReadVarInt()
-		{
-			var read = 0;
-			return ReadVarInt(out read);
-		}
+        public long ReadVarLong()
+        {
+            var numRead = 0;
+            long result = 0;
+            byte read;
+            do
+            {
+                read = (byte)ReadByte();
+                var value = read & 0x7f;
+                result |= (uint)(value << (7 * numRead));
+                numRead++;
+                if (numRead > 10)
+                {
+                    throw new Exception("VarLong is too big");
+                }
+            } while ((read & 0x80) != 0);
 
-		public int ReadVarInt(out int bytesRead)
-		{
-			var numRead = 0;
-			var result = 0;
-			byte read;
-			do
-			{
-				read = (byte)ReadByte();
-				var value = read & 0x7f;
-				result |= value << (7 * numRead);
-				numRead++;
-				if (numRead > 5)
-				{
-					throw new Exception("VarInt is too big");
-				}
-			} while ((read & 0x80) != 0);
-			bytesRead = numRead;
-			return result;
-		}
+            return result;
+        }
 
-		public long ReadVarLong()
-		{
-			var numRead = 0;
-			long result = 0;
-			byte read;
-			do
-			{
-				read = (byte)ReadByte();
-				var value = read & 0x7f;
-				result |= (uint) (value << (7 * numRead));
-				numRead++;
-				if (numRead > 10)
-				{
-					throw new Exception("VarLong is too big");
-				}
-			} while ((read & 0x80) != 0);
-
-			return result;
-		}
-
-		public short ReadShort()
-		{
-			var da = Read(2);
-			var d = BitConverter.ToInt16(da, 0);
-			return IPAddress.NetworkToHostOrder(d);
-		}
+        public short ReadShort()
+        {
+            var da = Read(2);
+            var d = BitConverter.ToInt16(da, 0);
+            return IPAddress.NetworkToHostOrder(d);
+        }
 
         public uint ReadUInt()
         {
@@ -306,61 +326,64 @@ namespace SharpMC.Network.Util
             return NetworkToHostOrder(BitConverter.ToUInt32(da, 0));
         }
 
-		public ushort ReadUShort()
-		{
-			var da = Read(2);
-			return NetworkToHostOrder(BitConverter.ToUInt16(da, 0));
-		}
+        public ushort ReadUShort()
+        {
+            var da = Read(2);
+            return NetworkToHostOrder(BitConverter.ToUInt16(da, 0));
+        }
 
-		public ushort[] ReadUShort(int count)
-		{
-			var us = new ushort[count];
-			for (var i = 0; i < us.Length; i++)
-			{
-				var da = Read(2);
-				var d = BitConverter.ToUInt16(da, 0);
-				us[i] = d;
-			}
-			return NetworkToHostOrder(us);
-		}
+        public ushort[] ReadUShort(int count)
+        {
+            var us = new ushort[count];
+            for (var i = 0; i < us.Length; i++)
+            {
+                var da = Read(2);
+                var d = BitConverter.ToUInt16(da, 0);
+                us[i] = d;
+            }
 
-		public ushort[] ReadUShortLocal(int count)
-		{
-			var us = new ushort[count];
-			for (var i = 0; i < us.Length; i++)
-			{
-				var da = Read(2);
-				var d = BitConverter.ToUInt16(da, 0);
-				us[i] = d;
-			}
-			return us;
-		}
+            return NetworkToHostOrder(us);
+        }
 
-		public short[] ReadShortLocal(int count)
-		{
-			var us = new short[count];
-			for (var i = 0; i < us.Length; i++)
-			{
-				var da = Read(2);
-				var d = BitConverter.ToInt16(da, 0);
-				us[i] = d;
-			}
-			return us;
-		}
+        public ushort[] ReadUShortLocal(int count)
+        {
+            var us = new ushort[count];
+            for (var i = 0; i < us.Length; i++)
+            {
+                var da = Read(2);
+                var d = BitConverter.ToUInt16(da, 0);
+                us[i] = d;
+            }
 
-		public string ReadString()
-		{
-			var length = ReadVarInt();
-			var stringValue = Read(length);
+            return us;
+        }
 
-			return Encoding.UTF8.GetString(stringValue);
-		}
+        public short[] ReadShortLocal(int count)
+        {
+            var us = new short[count];
+            for (var i = 0; i < us.Length; i++)
+            {
+                var da = Read(2);
+                var d = BitConverter.ToInt16(da, 0);
+                us[i] = d;
+            }
 
-		public long ReadLong()
-		{
-			var l = Read(8);
-			return IPAddress.NetworkToHostOrder(BitConverter.ToInt64(l, 0));
-		}
+            return us;
+        }
+
+        public string ReadString()
+        {
+            var length = ReadVarInt();
+            var stringValue = Read(length);
+
+            return Encoding.UTF8.GetString(stringValue);
+        }
+
+        public long ReadLong()
+        {
+            var l = Read(8);
+            return IPAddress.NetworkToHostOrder(BitConverter.ToInt64(l, 0));
+        }
 
         public byte[] ReadMetadata()
         {
@@ -380,47 +403,48 @@ namespace SharpMC.Network.Util
         }
 
         public Vector3 ReadPosition()
-		{
-			var val = ReadLong();
-			var x = Convert.ToSingle(val >> 38);
-			var y = Convert.ToSingle(val & 0xFFF);
-			var z = Convert.ToSingle(val << 38 >> 38 >> 12);
+        {
+            var val = ReadLong();
+            var x = Convert.ToSingle(val >> 38);
+            var y = Convert.ToSingle(val & 0xFFF);
+            var z = Convert.ToSingle(val << 38 >> 38 >> 12);
             return new Vector3(x, y, z);
-		}
+        }
 
-		private double NetworkToHostOrder(byte[] data)
-		{
-			if (BitConverter.IsLittleEndian)
-			{
-				Array.Reverse(data);
-			}
-			return BitConverter.ToDouble(data, 0);
-		}
+        private double NetworkToHostOrder(byte[] data)
+        {
+            if (BitConverter.IsLittleEndian)
+            {
+                Array.Reverse(data);
+            }
 
-		private float NetworkToHostOrder(float network)
-		{
-			var bytes = BitConverter.GetBytes(network);
+            return BitConverter.ToDouble(data, 0);
+        }
 
-			if (BitConverter.IsLittleEndian)
-				Array.Reverse(bytes);
+        private float NetworkToHostOrder(float network)
+        {
+            var bytes = BitConverter.GetBytes(network);
 
-			return BitConverter.ToSingle(bytes, 0);
-		}
+            if (BitConverter.IsLittleEndian)
+                Array.Reverse(bytes);
 
-		private ushort[] NetworkToHostOrder(ushort[] network)
-		{
-			if (BitConverter.IsLittleEndian)
-				Array.Reverse(network);
-			return network;
-		}
+            return BitConverter.ToSingle(bytes, 0);
+        }
 
-		private ushort NetworkToHostOrder(ushort network)
-		{
-			var net = BitConverter.GetBytes(network);
-			if (BitConverter.IsLittleEndian)
-				Array.Reverse(net);
-			return BitConverter.ToUInt16(net, 0);
-		}
+        private ushort[] NetworkToHostOrder(ushort[] network)
+        {
+            if (BitConverter.IsLittleEndian)
+                Array.Reverse(network);
+            return network;
+        }
+
+        private ushort NetworkToHostOrder(ushort network)
+        {
+            var net = BitConverter.GetBytes(network);
+            if (BitConverter.IsLittleEndian)
+                Array.Reverse(net);
+            return BitConverter.ToUInt16(net, 0);
+        }
 
         private uint NetworkToHostOrder(uint network)
         {
@@ -431,17 +455,18 @@ namespace SharpMC.Network.Util
         }
 
         private ulong NetworkToHostOrder(ulong network)
-		{
-			var net = BitConverter.GetBytes(network);
-			if (BitConverter.IsLittleEndian)
-				Array.Reverse(net);
-			return BitConverter.ToUInt64(net, 0);
-		}
+        {
+            var net = BitConverter.GetBytes(network);
+            if (BitConverter.IsLittleEndian)
+                Array.Reverse(net);
+            return BitConverter.ToUInt64(net, 0);
+        }
 
-		#endregion
+        #endregion
 
-		#region Writer
-		public void WriteMetadata(byte[] data)
+        #region Writer
+
+        public void WriteMetadata(byte[] data)
         {
             throw new NotImplementedException();
         }
@@ -452,26 +477,32 @@ namespace SharpMC.Network.Util
         }
 
         public void Write(byte[] data)
-		{
-			Write(data, 0, data.Length);
-		}
+        {
+            Write(data, 0, data.Length);
+        }
 
-		public void WritePosition(Vector3 position)
-		{
-			var x = Convert.ToInt64(position.X);
-			var y = Convert.ToInt64(position.Y);
-			var z = Convert.ToInt64(position.Z);
-			var toSend = ((x & 0x3FFFFFF) << 38) | ((z & 0x3FFFFFF) << 12) | (y & 0xFFF);
-			WriteLong(toSend);
-		}
+        public void Write(ReadOnlySequence<byte> data)
+        {
+            BaseStream.WriteSequence(data);
+        }
+
+        public void WritePosition(Vector3 position)
+        {
+            var x = Convert.ToInt64(position.X);
+            var y = Convert.ToInt64(position.Y);
+            var z = Convert.ToInt64(position.Z);
+            var toSend = ((x & 0x3FFFFFF) << 38) | ((z & 0x3FFFFFF) << 12) | (y & 0xFFF);
+            WriteLong(toSend);
+        }
 
         public void WriteStringArray(string[] texts)
         {
             if (texts == null)
             {
                 WriteVarInt(0);
-				return;
+                return;
             }
+
             WriteVarInt(texts.Length);
             foreach (var text in texts)
                 WriteString(text);
@@ -484,6 +515,7 @@ namespace SharpMC.Network.Util
                 WriteVarInt(0);
                 return;
             }
+
             WriteVarInt(values.Length);
             foreach (var value in values)
                 WriteBitField(value);
@@ -496,21 +528,22 @@ namespace SharpMC.Network.Util
                 WriteVarInt(0);
                 return;
             }
+
             WriteVarInt(values.Length);
             foreach (var value in values)
                 WriteLong(value);
         }
 
-		public void WriteByteArray(byte[] values)
+        public void WriteByteArray(byte[]? values)
         {
             if (values == null)
             {
                 WriteVarInt(0);
                 return;
             }
+
             WriteVarInt(values.Length);
-            foreach (var value in values)
-                WriteByte(value);
+            BaseStream.Write(values);
         }
 
         public void WriteByteArrays(byte[][] values)
@@ -520,6 +553,7 @@ namespace SharpMC.Network.Util
                 WriteVarInt(0);
                 return;
             }
+
             WriteVarInt(values.Length);
             foreach (var value in values)
                 WriteByteArray(value);
@@ -527,7 +561,7 @@ namespace SharpMC.Network.Util
 
         public void WriteSByte(sbyte value)
         {
-	        WriteByte((byte) value);
+            WriteByte((byte)value);
         }
 
         void IMinecraftWriter.WriteVarInt(int value)
@@ -536,7 +570,7 @@ namespace SharpMC.Network.Util
         }
 
         public int WriteVarInt(int value)
-		{
+        {
             var write = 0;
             do
             {
@@ -546,34 +580,38 @@ namespace SharpMC.Network.Util
                 {
                     temp |= 128;
                 }
+
                 WriteByte(temp);
                 write++;
             } while (value != 0);
+
             return write;
-		}
+        }
 
-		public int WriteVarLong(long value)
-		{
-			var write = 0;
-			do
-			{
-				var temp = (byte)(value & 127);
-				value >>= 7;
-				if (value != 0)
-				{
-					temp |= 128;
-				}
-				WriteByte(temp);
-				write++;
-			} while (value != 0);
-			return write;
-		}
+        public int WriteVarLong(long value)
+        {
+            var write = 0;
+            do
+            {
+                var temp = (byte)(value & 127);
+                value >>= 7;
+                if (value != 0)
+                {
+                    temp |= 128;
+                }
 
-		public void WriteInt(int data)
-		{
-			var buffer = BitConverter.GetBytes(IPAddress.HostToNetworkOrder(data));
-			Write(buffer);
-		}
+                WriteByte(temp);
+                write++;
+            } while (value != 0);
+
+            return write;
+        }
+
+        public void WriteInt(int data)
+        {
+            var buffer = BitConverter.GetBytes(IPAddress.HostToNetworkOrder(data));
+            Write(buffer);
+        }
 
         public void WriteBuffer(byte[] data)
         {
@@ -583,47 +621,49 @@ namespace SharpMC.Network.Util
         public void WriteString(string data)
         {
             var txt = data ?? string.Empty;
-			var stringData = Encoding.UTF8.GetBytes(txt);
-			WriteVarInt(stringData.Length);
-			Write(stringData);
-		}
+            var stringData = Encoding.UTF8.GetBytes(txt);
+            WriteVarInt(stringData.Length);
+            Write(stringData);
+        }
 
-		public void WriteShort(short data)
-		{
-			var shortData = BitConverter.GetBytes(IPAddress.HostToNetworkOrder(data));
-			Write(shortData);
-		}
+        public void WriteShort(short data)
+        {
+            var shortData = BitConverter.GetBytes(IPAddress.HostToNetworkOrder(data));
+            Write(shortData);
+        }
 
         public void WriteSlot(ISlotData value)
         {
             value.Encode(this);
         }
 
-		public void WriteUShort(ushort data)
-		{
-			var uShortData = BitConverter.GetBytes(data);
-			Write(uShortData);
-		}
+        public void WriteUShort(ushort data)
+        {
+            var uShortData = BitConverter.GetBytes(data);
+            Write(uShortData);
+        }
 
-		public void WriteBool(bool data)
-		{
-			Write(BitConverter.GetBytes(data));
-		}
+        public void WriteBool(bool data)
+        {
+            Write(BitConverter.GetBytes(data));
+        }
 
-		public void WriteDouble(double data)
-		{
-			Write(HostToNetworkOrder(data));
-		}
+        public void WriteDouble(double data)
+        {
+            Write(HostToNetworkOrder(data));
+        }
 
-		public void WriteFloat(float data)
-		{
-			Write(HostToNetworkOrder(data));
-		}
+        public void WriteFloat(float data)
+        {
+            Write(HostToNetworkOrder(data));
+        }
 
-		public void WriteLong(long data)
-		{
-			Write(BitConverter.GetBytes(IPAddress.HostToNetworkOrder(data)));
-		}
+        public void WriteLong(long data)
+        {
+            Span<byte> bytes = stackalloc byte[sizeof(long)];
+            BitConverter.TryWriteBytes(bytes, IPAddress.HostToNetworkOrder(data));
+            Write(bytes);
+        }
 
         public void WriteOptNbt(object data)
         {
@@ -632,6 +672,7 @@ namespace SharpMC.Network.Util
                 WriteByte(0);
                 return;
             }
+
             byte[] bytes;
             if (data is INbtSerializable s)
             {
@@ -639,87 +680,89 @@ namespace SharpMC.Network.Util
             }
             else
             {
-                bytes = ((CompoundTag) data).ToBytes();
+                bytes = ((CompoundTag)data).ToBytes();
             }
+
             Write(bytes);
         }
 
         public void WriteNbt(INbtSerializable data)
         {
             var bytes = data.ToBytes();
-			Write(bytes);
+            Write(bytes);
         }
 
-		public void WriteULong(ulong data)
-		{
-			Write(HostToNetworkOrderLong(data));
-		}
+        public void WriteULong(ulong data)
+        {
+            Write(HostToNetworkOrderLong(data));
+        }
 
         public void WriteUuid(Guid uuid)
-		{
-			var guid = uuid.ToByteArray();
-			var long1 = new byte[8];
-			var long2 = new byte[8];
-			Array.Copy(guid, 0, long1, 0, 8);
-			Array.Copy(guid, 8, long2, 0, 8);
-			Write(long1);
-			Write(long2);
-		}
+        {
+            var guid = uuid.ToByteArray();
+            var long1 = new byte[8];
+            var long2 = new byte[8];
+            Array.Copy(guid, 0, long1, 0, 8);
+            Array.Copy(guid, 8, long2, 0, 8);
+            Write(long1);
+            Write(long2);
+        }
 
-		public Guid ReadUuid()
-		{
-			var long1 = Read(8);
-			var long2 = Read(8);
+        public Guid ReadUuid()
+        {
+            var long1 = Read(8);
+            var long2 = Read(8);
             return new Guid(long1.Concat(long2).ToArray());
-		}
+        }
 
         private byte[] HostToNetworkOrder(double d)
-		{
-			var data = BitConverter.GetBytes(d);
+        {
+            var data = BitConverter.GetBytes(d);
             if (BitConverter.IsLittleEndian)
-				Array.Reverse(data);
+                Array.Reverse(data);
             return data;
-		}
+        }
 
-		private byte[] HostToNetworkOrder(float host)
-		{
-			var bytes = BitConverter.GetBytes(host);
+        private byte[] HostToNetworkOrder(float host)
+        {
+            var bytes = BitConverter.GetBytes(host);
             if (BitConverter.IsLittleEndian)
-				Array.Reverse(bytes);
+                Array.Reverse(bytes);
             return bytes;
-		}
+        }
 
-		private byte[] HostToNetworkOrderLong(ulong host)
-		{
-			var bytes = BitConverter.GetBytes(host);
+        private byte[] HostToNetworkOrderLong(ulong host)
+        {
+            var bytes = BitConverter.GetBytes(host);
             if (BitConverter.IsLittleEndian)
-				Array.Reverse(bytes);
+                Array.Reverse(bytes);
             return bytes;
-		}
+        }
 
         #endregion
 
         private object _disposeLock = new();
-		private bool _disposed;
+        private bool _disposed;
 
-		protected override void Dispose(bool disposing)
-		{
-			if (!Monitor.IsEntered(_disposeLock))
-				return;
+        protected override void Dispose(bool disposing)
+        {
+            if (!Monitor.IsEntered(_disposeLock))
+                return;
             try
-			{
-				if (disposing && !_disposed)
-				{
-					_disposed = true;
+            {
+                if (disposing && !_disposed)
+                {
+                    _disposed = true;
                     if (!CancelationToken.IsCancellationRequested)
-						CancelationToken.Cancel();
+                        CancelationToken.Cancel();
                 }
-				base.Dispose(disposing);
-			}
-			finally
-			{
-				Monitor.Exit(_disposeLock);
-			}
-		}
+
+                base.Dispose(disposing);
+            }
+            finally
+            {
+                Monitor.Exit(_disposeLock);
+            }
+        }
     }
 }

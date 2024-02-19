@@ -32,6 +32,7 @@ namespace SharpMC.Generator.Prismarine
                 using var client = new WebClient();
                 client.DownloadFile(url, dest);
             }
+
             ReadJsonFile(dest, target);
             Console.WriteLine();
         }
@@ -45,6 +46,7 @@ namespace SharpMC.Generator.Prismarine
             {
                 throw new InvalidOperationException("Empty JSON!");
             }
+
             foreach (var pair in json)
             {
                 if (pair.Key == "types")
@@ -79,9 +81,11 @@ namespace SharpMC.Generator.Prismarine
                             sOnlyList.Add(item.Second);
                             continue;
                         }
+
                         CodeGen.WriteDown(item, target, "ToBoth");
                     }
                 }
+
                 if (cOnlyList.Count >= 1)
                 {
                     Console.WriteLine("   # toClient");
@@ -91,6 +95,7 @@ namespace SharpMC.Generator.Prismarine
                         CodeGen.WriteDown(item, target, "ToClient");
                     }
                 }
+
                 if (sOnlyList.Count >= 1)
                 {
                     Console.WriteLine("   # toServer");
@@ -154,6 +159,7 @@ namespace SharpMC.Generator.Prismarine
                     }
                     // TODO: Something complex ?!
                 }
+
                 yield return new OneUnit
                 {
                     Id = foundId, Namespace = nsp, Direction = name, Class = itemName, Fields = fRes

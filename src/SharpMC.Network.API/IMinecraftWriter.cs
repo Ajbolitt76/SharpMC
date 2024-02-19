@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Numerics;
 using SharpMC.Network.Binary;
 using SharpMC.Network.Binary.Special;
@@ -33,5 +34,6 @@ namespace SharpMC.Network.API
         void WriteBitField(IPacket value);
         void WriteBitFieldArray<T>(T[] entities) where T : IPacket, new();
         void Write(byte[] data);
+        void Write(ReadOnlySequence<byte> data);
     }
 }

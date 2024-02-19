@@ -6,9 +6,10 @@ namespace SharpMC.Network.Util
     {
         public static int[] ToIntArray(long value)
         {
-            var bytes = BitConverter.GetBytes(value);
-            var first = BitConverter.ToInt32(bytes, 4);
-            var second = BitConverter.ToInt32(bytes, 0);
+            Span<byte> sp = stackalloc byte[8];
+            BitConverter.TryWriteBytes(sp, value);
+            var first = BitConverter.ToInt32(sp[4..]);
+            var second = BitConverter.ToInt32(sp[..4]);
             return new[] {first, second};
         }
 

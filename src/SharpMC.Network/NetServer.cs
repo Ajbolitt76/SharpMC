@@ -1,9 +1,12 @@
 ﻿using System;
 using System.Collections.Concurrent;
+using System.IO.Pipes;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
+using Pipelines.Sockets.Unofficial;
 using SharpMC.Network.API;
 using SharpMC.Network.Events;
 using ProtocolType = SharpMC.Network.API.ProtocolType;
@@ -17,11 +20,11 @@ namespace SharpMC.Network
         public NetConnectionFactory NetConnectionFactory { get; }
         internal INetConfiguration Configuration { get; }
 
-		private CancellationTokenSource CancellationToken { get; set; }
+        private CancellationTokenSource CancellationToken { get; set; }
         private ConcurrentDictionary<EndPoint, NetConnection> Connections { get; set; }
         private Socket ListenerSocket { get; set; }
-        
-        public NetServer(ILogger<NetServer> log, INetConfiguration config, 
+
+        public NetServer(ILogger<NetServer> log, INetConfiguration config,
             NetConnectionFactory factory)
         {
             Log = log;
@@ -30,8 +33,6 @@ namespace SharpMC.Network
             SetDefaults();
             Configure();
         }
-
-        public EventHandler<ConnectionAcceptedArgs> OnConnectionAccepted;
 
         private void SetDefaults()
         {
@@ -43,8 +44,10 @@ namespace SharpMC.Network
         {
             if (Configuration.Protocol == ProtocolType.Tcp)
             {
-                ListenerSocket = new Socket(AddressFamily.InterNetwork,
-                    SocketType.Stream, System.Net.Sockets.ProtocolType.Tcp);
+                ListenerSocket = new Socket(
+                    AddressFamily.InterNetwork,
+                    SocketType.Stream,
+                    System.Net.Sockets.ProtocolType.Tcp);
             }
             else
             {
@@ -59,7 +62,7 @@ namespace SharpMC.Network
                 var endpoint = new IPEndPoint(Configuration.Host, Configuration.Port);
                 ListenerSocket.Bind(endpoint);
                 ListenerSocket.Listen(10);
-                ListenerSocket.BeginAccept(ConnectionCallback, null);
+                _ = AcceptConnections(CancellationToken.Token);
             }
         }
 
@@ -72,41 +75,32 @@ namespace SharpMC.Network
             }
         }
 
-        private void ConnectionCallback(IAsyncResult ar)
+        private async Task AcceptConnections(CancellationToken cancellationToken)
         {
-            Socket socket = null;
-            try
+            while (!cancellationToken.IsCancellationRequested)
             {
-                socket = ListenerSocket.EndAccept(ar);
-            }
-            catch
-            {
-                Log.LogWarning("Failed to accept connection!");
-            }
-            ListenerSocket.BeginAccept(ConnectionCallback, null);
-            if (socket == null) 
-            	return;
-			var conn = NetConnectionFactory.CreateConnection(Direction.Client, socket, ConfirmedAction);
-			if (Connections.TryAdd(socket.RemoteEndPoint, conn))
-			{
-				conn.OnConnectionClosed += (sender, args) =>
-				{
-					if (Connections.TryRemove(args.Connection.RemoteEndPoint, out var nc))
-					{
-                        Log.LogInformation($"Client disconnected: {nc.RemoteEndPoint}");
-					}
-				};
-				conn.Initialize();
-			}
-			else
-			{
-				Log.LogWarning("Could not create new active connection!");
-			}
-		}
+                var socket = await ListenerSocket.AcceptAsync(cancellationToken);
+                var conn = NetConnectionFactory.CreateConnection(
+                    Direction.Client, 
+                    SocketConnection.Create(socket));
 
-        private void ConfirmedAction(object _, ConnectionConfirmedArgs a)
-        {
-            OnConnectionAccepted?.Invoke(this, new ConnectionAcceptedArgs(a.Connection));
+                if (Connections.TryAdd(socket.RemoteEndPoint!, conn))
+                {
+                    conn.OnConnectionClosed += (sender, args) =>
+                    {
+                        if (Connections.TryRemove(args.Connection.RemoteEndPoint, out var nc))
+                        {
+                            Log.LogInformation($"Client disconnected: {nc.RemoteEndPoint}");
+                        }
+                    };
+                    conn.Initialize();
+                }
+                else
+                {
+                    Log.LogWarning("Could not create new active connection!");
+                }
+            }
         }
+        
     }
 }

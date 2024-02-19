@@ -6,6 +6,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
+using Pipelines.Sockets.Unofficial;
 using SharpMC.API;
 using SharpMC.API.Entities;
 using SharpMC.API.Net;
@@ -35,20 +36,24 @@ namespace SharpMC.Net
         private IServer Server { get; }
         private Random Rnd { get; }
 
-        public McNetConnection(ILogger<NetConnection> log, IServer server,
-            Direction direction, Socket socket) : base(log, direction, socket)
+        public McNetConnection(
+            ILogger<NetConnection> log,
+            IServer server,
+            Direction direction,
+            SocketConnection connectionPipe) : base(log, direction, connectionPipe)
         {
             Rnd = new Random();
             Server = server;
             OnConnectionClosed += OnConnectionClosedEvent;
         }
 
-        private IPlayer Player { get; set; }
+        private IPlayer? Player { get; set; }
 
         private void OnConnectionClosedEvent(object sender, ConnectionClosedArgs e)
         {
             if (Player == null)
                 return;
+
             Player.Level?.RemovePlayer(Player);
             Player.Level = null;
         }
@@ -57,6 +62,7 @@ namespace SharpMC.Net
         {
             if (packet == null)
                 return;
+
             switch (ConnectionState)
             {
                 case ConnectionState.Handshake:
@@ -80,7 +86,7 @@ namespace SharpMC.Net
         {
             if (packet is SetProtocol handshake)
             {
-                ConnectionState = (ConnectionState) handshake.NextState;
+                ConnectionState = (ConnectionState)handshake.NextState;
             }
         }
 
@@ -88,10 +94,11 @@ namespace SharpMC.Net
         {
             if (packet is PingStart)
             {
-                SendPacket(new Network.Packets.Status.ToClient.ServerInfo
-                {
-                    Response = Server.Info.GetMotd()
-                });
+                SendPacket(
+                    new Network.Packets.Status.ToClient.ServerInfo
+                    {
+                        Response = Server.Info.GetMotd()
+                    });
             }
             else if (packet is Ping)
             {
@@ -127,6 +134,7 @@ namespace SharpMC.Net
                     return;
                 }
             }
+
             var decryptedSharedSecret = Server.RsaEncryption.Decrypt(packet.SharedSecret);
             Array.Resize(ref decryptedSharedSecret, 16);
             InitEncryption(decryptedSharedSecret);
@@ -134,6 +142,7 @@ namespace SharpMC.Net
             {
                 // TODO: Check if we are in online mode
             }
+
             ChangeToPlay();
         }
 
@@ -146,12 +155,13 @@ namespace SharpMC.Net
                 var r = new Random(Environment.TickCount);
                 r.NextBytes(_encryptionVerification);
                 // We use encryption
-                SendPacket(new Network.Packets.Login.ToClient.EncryptionBegin
-                {
-                    ServerId = "",
-                    PublicKey = Server.RsaEncryption.PublicKey,
-                    VerifyToken = _encryptionVerification
-                });
+                SendPacket(
+                    new Network.Packets.Login.ToClient.EncryptionBegin
+                    {
+                        ServerId = "",
+                        PublicKey = Server.RsaEncryption.PublicKey,
+                        VerifyToken = _encryptionVerification
+                    });
             }
             else
             {
@@ -161,16 +171,18 @@ namespace SharpMC.Net
 
         private void ChangeToPlay()
         {
-            SendPacket(new Compress
-            {
-                Threshold = CompressionThreshold
-            });
+            SendPacket(
+                new Compress
+                {
+                    Threshold = CompressionThreshold
+                });
+            SendPacket(
+                new Success
+                {
+                    Username = Player.UserName,
+                    Uuid = Player.Uuid
+                });
             CompressionEnabled = true;
-            SendPacket(new Success
-            {
-                Username = Player.UserName,
-                Uuid = Player.Uuid
-            });
             ConnectionState = ConnectionState.Play;
             Player.InitiateGame();
         }
@@ -186,6 +198,7 @@ namespace SharpMC.Net
                 ms.Write(Server.RsaEncryption.PublicKey, 0, Server.RsaEncryption.PublicKey.Length);
                 serverHash = JavaHexDigest(ms.ToArray());
             }
+
             using (var wc = new WebClient())
             {
                 const string moj = "https://sessionserver.mojang.com/session/minecraft/hasJoined";
@@ -200,6 +213,7 @@ namespace SharpMC.Net
                 Player.Uuid = new Guid(auth.Id);
                 Player.AuthResponse = auth;
             }
+
             return true;
         }
 
@@ -231,13 +245,14 @@ namespace SharpMC.Net
             var carry = true;
             for (i = p.Length - 1; i >= 0; i--)
             {
-                p[i] = (byte) ~p[i];
+                p[i] = (byte)~p[i];
                 if (carry)
                 {
                     carry = p[i] == 0xFF;
                     p[i]++;
                 }
             }
+
             return p;
         }
 
@@ -253,23 +268,23 @@ namespace SharpMC.Net
             }
             else if (packet is Position)
             {
-                HandlePlayerPos((Position) packet);
+                HandlePlayerPos((Position)packet);
             }
             else if (packet is PositionLook)
             {
-                HandlePlayerPosAndLook((PositionLook) packet);
+                HandlePlayerPosAndLook((PositionLook)packet);
             }
             else if (packet is Look)
             {
-                HandlePlayerLook((Look) packet);
+                HandlePlayerLook((Look)packet);
             }
             else if (packet is SettingsPk)
             {
-                HandleClientSettings((SettingsPk) packet);
+                HandleClientSettings((SettingsPk)packet);
             }
             else if (packet is Chat)
             {
-                HandleChatMessage((Chat) packet);
+                HandleChatMessage((Chat)packet);
             }
         }
 
@@ -284,7 +299,7 @@ namespace SharpMC.Net
 
         private void HandleClientSettings(SettingsPk packet)
         {
-            Player.ViewDistance = Math.Min((int) packet.ViewDistance, 12);
+            Player.ViewDistance = Math.Min((int)packet.ViewDistance, 12);
         }
 
         private void HandlePlayerLook(Look packet)
@@ -301,9 +316,9 @@ namespace SharpMC.Net
             var pos = Player.KnownPosition;
             Player.KnownPosition = pos with
             {
-                X = (float) packet.X,
-                Y = (float) (packet.Y + 1.62f),
-                Z = (float) packet.Z,
+                X = (float)packet.X,
+                Y = (float)(packet.Y + 1.62f),
+                Z = (float)packet.Z,
                 Yaw = packet.Yaw,
                 Pitch = packet.Pitch
             };
@@ -314,9 +329,9 @@ namespace SharpMC.Net
             var pos = Player.KnownPosition;
             Player.KnownPosition = pos with
             {
-                X = (float) packet.X,
-                Y = (float) (packet.Y + 1.62f),
-                Z = (float) packet.Z
+                X = (float)packet.X,
+                Y = (float)(packet.Y + 1.62f),
+                Z = (float)packet.Z
             };
         }
 
@@ -336,14 +351,14 @@ namespace SharpMC.Net
         {
             KeepAliveReady = false;
             _lastKeepAlive = Rnd.Next();
-            SendPacket(new KeepAlive {KeepAliveId = _lastKeepAlive});
+            SendPacket(new KeepAlive { KeepAliveId = _lastKeepAlive });
         }
 
         #endregion
 
         public void SendPacket(IPacket packet)
         {
-            var raw = (Packet) packet;
+            var raw = (Packet)packet;
             base.SendPacket(raw);
         }
     }
